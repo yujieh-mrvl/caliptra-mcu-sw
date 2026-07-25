@@ -100,6 +100,15 @@ pub(crate) const CMD_GET_ATTESTED_MLDSA87_CSR: u32 = 0x414D_4352; // "AMCR"
 /// `FE_PROG` (field-entropy program) command ID.
 pub(crate) const CMD_FE_PROG: u32 = 0x4645_5052; // "FEPR"
 
+/// `GET_IMAGE_INFO` command ID.
+pub(crate) const CMD_GET_IMAGE_INFO: u32 = 0x494D_4530; // "IME0"
+
+/// `VERIFY_AUTH_MANIFEST` command ID.
+pub(crate) const CMD_VERIFY_AUTH_MANIFEST: u32 = 0x4154_564D; // "ATVM"
+
+/// `ACTIVATE_FIRMWARE` command ID.
+pub(crate) const CMD_ACTIVATE_FIRMWARE: u32 = 0x4143_5446; // "ACTF"
+
 /// `PRODUCTION_AUTH_DEBUG_UNLOCK_REQ` command ID.
 pub(crate) const CMD_PRODUCTION_AUTH_DEBUG_UNLOCK_REQ: u32 = 0x5044_5552; // "PDUR"
 
@@ -176,6 +185,21 @@ pub(crate) async fn mbox_execute(
         caliptra_mcu_libsyscall_caliptra::DefaultSyscalls,
     >::new();
     mbox.execute(cmd, req, rsp).await.map_err(map_mbox_err)
+}
+
+/// Execute a Caliptra chunked mailbox command backed by a payload stream.
+pub(crate) async fn mbox_execute_with_payload_stream(
+    cmd: u32,
+    header: Option<&[u8]>,
+    payload: &mut dyn caliptra_mcu_libsyscall_caliptra::mailbox::PayloadStream,
+    rsp: &mut [u8],
+) -> mcu_error::McuResult<usize> {
+    let mbox = caliptra_mcu_libsyscall_caliptra::mailbox::Mailbox::<
+        caliptra_mcu_libsyscall_caliptra::DefaultSyscalls,
+    >::new();
+    mbox.execute_with_payload_stream(cmd, header, payload, rsp)
+        .await
+        .map_err(map_mbox_err)
 }
 
 // ---- Shared utilities -----------------------------------------------------

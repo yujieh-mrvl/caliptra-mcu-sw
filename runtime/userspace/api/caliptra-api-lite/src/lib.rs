@@ -40,11 +40,15 @@ pub mod eat;
 #[cfg(feature = "mailbox-io")]
 mod ecdh;
 #[cfg(feature = "mailbox-io")]
+pub mod errors;
+#[cfg(feature = "mailbox-io")]
 mod fe_prog;
 #[cfg(feature = "mailbox-io")]
 mod fw_info;
 #[cfg(feature = "mailbox-io")]
 mod hmac;
+#[cfg(feature = "mailbox-io")]
+pub mod image_loader;
 #[cfg(feature = "mailbox-io")]
 mod import;
 pub mod mailbox;
@@ -109,6 +113,11 @@ pub use fe_prog::fe_prog;
 pub use fw_info::{fw_info, FwInfo};
 #[cfg(feature = "mailbox-io")]
 pub use hmac::{cm_hmac, hkdf_expand, hkdf_extract, HkdfSalt, CMB_HMAC_MAX_SIZE};
+#[cfg(feature = "mailbox-io")]
+pub use image_loader::{
+    activate_firmware, DmaTransfer, FlashImageLoader, FlashMailboxPayloadStream, ImageLoader,
+    LoadedImage, PldmFirmwareDeviceParams, PldmImageLoader, IMAGE_MEASUREMENT_DIGEST_SIZE,
+};
 #[cfg(feature = "mailbox-io")]
 pub use import::{cm_delete, cm_import};
 #[cfg(feature = "mailbox-io")]

@@ -1,6 +1,11 @@
 // Licensed under the Apache-2.0 license
 
 extern crate alloc;
+#[cfg(any(
+    feature = "test-pldm-discovery",
+    feature = "test-pldm-fw-update",
+    feature = "test-pldm-fw-update-e2e"
+))]
 use alloc::boxed::Box;
 #[cfg(any(feature = "streaming-boot", feature = "flash-boot"))]
 use alloc::vec::Vec;
@@ -14,10 +19,12 @@ mod pldm_fdops_mock;
 
 mod config;
 
+#[cfg(any(
+    feature = "test-pldm-discovery",
+    feature = "test-pldm-fw-update",
+    feature = "test-pldm-fw-update-e2e"
+))]
 use async_trait::async_trait;
-use caliptra_api::mailbox::{
-    ActivateFirmwareReq, ActivateFirmwareResp, CommandId, MailboxReqHeader,
-};
 #[allow(unused)]
 use caliptra_mcu_config::boot;
 #[allow(unused)]
@@ -32,7 +39,6 @@ use caliptra_mcu_libapi_emulated_caliptra::image_loading::flash_boot_cfg::FlashB
 use caliptra_mcu_libsyscall_caliptra::dma::{AXIAddr, DMAMapping};
 #[allow(unused)]
 use caliptra_mcu_libsyscall_caliptra::flash::SpiFlash;
-use caliptra_mcu_libsyscall_caliptra::mailbox::{Mailbox, MailboxError};
 use caliptra_mcu_libsyscall_caliptra::mci::{mci_reg::RESET_REASON, Mci as MciSyscall};
 #[allow(unused)]
 use caliptra_mcu_libsyscall_caliptra::system::System;
@@ -67,6 +73,11 @@ use core::ptr::NonNull;
 
 #[allow(unused)]
 use crate::EXECUTOR;
+use caliptra_mcu_libsyscall_caliptra::DefaultSyscalls;
+#[allow(unused)]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[allow(unused)]
+use embassy_sync::{lazy_lock::LazyLock, signal::Signal};
 #[allow(unused)]
 #[cfg(not(any(
     feature = "streaming-boot",
@@ -75,9 +86,7 @@ use crate::EXECUTOR;
     feature = "test-pldm-fw-update-e2e",
     feature = "test-pldm-streaming-boot"
 )))]
-use caliptra_mcu_libapi_caliptra::image_loading::{
-    dma_transfer::DmaTransfer, FlashImageLoader, ImageLoader,
-};
+use mcu_caliptra_api_lite::image_loader::{DmaTransfer, FlashImageLoader, ImageLoader};
 #[allow(unused)]
 #[cfg(any(
     feature = "streaming-boot",
@@ -86,17 +95,9 @@ use caliptra_mcu_libapi_caliptra::image_loading::{
     feature = "test-pldm-fw-update-e2e",
     feature = "test-pldm-streaming-boot"
 ))]
-use caliptra_mcu_libapi_caliptra::image_loading::{
-    dma_transfer::DmaTransfer, FlashImageLoader, ImageLoader, PldmFirmwareDeviceParams,
-    PldmImageLoader,
+use mcu_caliptra_api_lite::image_loader::{
+    DmaTransfer, FlashImageLoader, ImageLoader, PldmFirmwareDeviceParams, PldmImageLoader,
 };
-use caliptra_mcu_libsyscall_caliptra::DefaultSyscalls;
-#[allow(unused)]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-#[allow(unused)]
-use embassy_sync::{lazy_lock::LazyLock, signal::Signal};
-#[allow(unused)]
-use zerocopy::{FromBytes, IntoBytes};
 
 const RESET_REASON_FW_HITLESS_UPD_RESET_MASK: u32 = 0x1;
 #[cfg(any(feature = "streaming-boot", feature = "flash-boot"))]
@@ -215,7 +216,9 @@ async fn image_loading<D: DMAMapping>(
                 let _ = pldm_image_loader.finalize(VerifyResult::VerifyFailedFdSecurityChecks);
             })?;
         // Close the PLDM session on success
-        pldm_image_loader.finalize(VerifyResult::VerifySuccess)?;
+        pldm_image_loader
+            .finalize(VerifyResult::VerifySuccess)
+            .map_err(|_| ErrorCode::Fail)?;
         // Wait for the PLDM service to fully complete the protocol before proceeding
         pldm_image_loader.wait_for_service_stopped().await;
         // Activate the SoC Images (set FW_EXEC_CTRL bit of the corresponding SoC)
@@ -269,7 +272,10 @@ async fn image_loading<D: DMAMapping>(
             // Depending on whether the SoC manifest preamble DPE contexts are
             // updated during hitless update, setting the manifest here may also
             // create mismatched journey measurements.
-            flash_image_loader.set_auth_manifest().await?;
+            flash_image_loader
+                .set_auth_manifest()
+                .await
+                .map_err(|_| ErrorCode::Fail)?;
         }
 
         load_soc_images(&flash_image_loader, soc_image_load_list, component_update).await?;
@@ -332,7 +338,7 @@ async fn load_soc_images(
         unsafe { BitmapAllocator::new(scratch_ptr, IMAGE_LOAD_MEASUREMENT_SCRATCH_SIZE) };
 
     for fw_id in soc_image_load_list {
-        let loaded = loader.load(*fw_id).await?;
+        let loaded = loader.load(*fw_id).await.map_err(|_| ErrorCode::Fail)?;
         let metadata = if component_update {
             ImageMetadata::component_update(
                 ImageHashSource::LoadAddress,
@@ -353,37 +359,9 @@ async fn load_soc_images(
 
 #[allow(dead_code)]
 async fn activate_soc_images(fw_id_list: &[u32]) -> Result<(), ErrorCode> {
-    let fw_ids = {
-        let mut ids = [0u32; ActivateFirmwareReq::MAX_FW_ID_COUNT];
-        for (i, fw_id) in fw_id_list.iter().enumerate() {
-            ids[i] = *fw_id;
-        }
-        ids
-    };
-    let mut req = ActivateFirmwareReq {
-        hdr: MailboxReqHeader { chksum: 0 },
-        fw_id_count: fw_id_list.len() as u32,
-        fw_ids,
-        mcu_fw_image_size: 0, // MCU image is not activated here
-    };
-
-    let req = req.as_mut_bytes();
-    let mailbox = Mailbox::<DefaultSyscalls>::new();
-
-    mailbox
-        .populate_checksum(CommandId::ACTIVATE_FIRMWARE.into(), req)
-        .unwrap();
-    let response_buffer = &mut [0u8; core::mem::size_of::<ActivateFirmwareResp>()];
-    loop {
-        let result = mailbox
-            .execute(CommandId::ACTIVATE_FIRMWARE.into(), req, response_buffer)
-            .await;
-        match result {
-            Ok(_) => return Ok(()),
-            Err(MailboxError::ErrorCode(ErrorCode::Busy)) => continue,
-            Err(_) => return Err(ErrorCode::Fail),
-        }
-    }
+    mcu_caliptra_api_lite::activate_firmware(fw_id_list)
+        .await
+        .map_err(|_| ErrorCode::Fail)
 }
 
 pub struct EmulatedDMAMap {}
@@ -452,7 +430,6 @@ impl<D: DMAMapping + 'static> DMAMapping for FlashReaderDma<D> {
     }
 }
 
-#[async_trait(?Send)]
 impl<D: DMAMapping + 'static> DmaTransfer for FlashReaderDma<D> {
     fn max_transfer_size(&self) -> usize {
         MAX_DMA_TRANSFER_SIZE
